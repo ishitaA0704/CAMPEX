@@ -1,113 +1,78 @@
 import streamlit as st
 import json
 import time
-import os
 import pandas as pd
 
-# 1. Page Config
-st.set_page_config(page_title="CAMPEX: MSRIT BESCOM Shield", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CAMPEX: MSRIT BESCOM Shield", layout="wide")
+st.title("⚡ CAMPEX: Level-5 Autonomous Adversarial Twin")
 
-# Custom CSS for polished aesthetic
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #0e1117;
-        color: #e0e0e0;
-    }
-    .metric-card {
-        background-color: #1e222b;
-        border-radius: 10px;
-        padding: 15px;
-        border: 1px solid #30363d;
-    }
-</style>
-""", unsafe_allow_html=True)
+# 1. State Management for the Graph
+if "kva_history" not in st.session_state:
+    st.session_state.kva_history = [450] * 50 # Pre-fill with normal data
 
-st.title("⚡ CAMPEX: MSRIT Autonomous Power Shield")
-st.caption("Campus Resource & Anomaly Exchange | HT-2b BESCOM Demand Manager")
-
-# 2. Session state history for live chart
-if "power_history" not in st.session_state:
-    st.session_state.power_history = []
-
-# 3. Read shared state JSON
-state_file_path = os.path.join(os.path.dirname(__file__), "state.json")
-
-def read_state():
+# 2. Safe File Readers
+def read_json_safe(filepath, fallback_data):
     try:
-        with open(state_file_path, "r") as f:
+        with open(filepath, "r") as f:
             return json.load(f)
-    except Exception:
-        return {
-            "base_campus_kw": 330.0,
-            "apex_kw": 120.0,
-            "ai_target": "none",
-            "ai_throttle_percent": 0
-        }
+    except: # If Ishita/Sandeep are mid-write, don't crash. Use fallback.
+        return fallback_data
 
-state = read_state()
+telemetry = read_json_safe("telemetry.json", {
+    "fault_active": False,
+    "telemetry": {"apex_block_kw": 120, "desh_block_kw": 110, "hostel_grid_kw": 95, "stp_blowers_kw": 70, "water_pumps_kw": 35}
+})
 
-# 4. Physics Engine calculations
-stp_max_kw = 100.0
-throttle_pct = state.get("ai_throttle_percent", 0)
-stp_current_kw = stp_max_kw * (1.0 - (throttle_pct / 100.0))
+action = read_json_safe("action.json", {
+    "status": "standby", "target_asset": "none", "shed_percentage": 0, "justification": ""
+})
 
-total_kva = state.get("base_campus_kw", 330.0) + state.get("apex_kw", 120.0)
+# 3. The Physics & Math Engine
+t_data = telemetry["telemetry"]
+raw_total_kw = sum(t_data.values())
 
-if throttle_pct > 0:
-    total_kva = total_kva - (stp_max_kw - stp_current_kw)
-    do_level = 1.2
-    esg_message = "✅ Crisis Averted. BESCOM Penalty Avoided: ₹85,000. Biological Safety of MSRIT STP Maintained."
+# Apply Sandeep's AI Fix if executed
+stp_actual_kw = t_data["stp_blowers_kw"]
+if action["status"] == "executed" and action["target_asset"] == "STP_blowers":
+    shed_amount = t_data["stp_blowers_kw"] * (action["shed_percentage"] / 100.0)
+    raw_total_kw -= shed_amount
+    stp_actual_kw -= shed_amount
+    do_level = 1.4 # Biological consequence of throttling
 else:
-    do_level = 2.5
-    esg_message = "Normal Operations."
+    do_level = 2.2 # Normal operations
 
-st.session_state.power_history.append(total_kva)
-if len(st.session_state.power_history) > 60:
-    st.session_state.power_history.pop(0)
+# Convert to kVA (Assuming 0.95 Power Factor)
+current_kva = raw_total_kw / 0.95
 
-# 5. UI Banner Alerts
-if total_kva > 500:
-    st.error("🚨 WARNING: MAXIMUM DEMAND EXCEEDED (500 kVA limit). 15:00 UNTIL ₹85,000 BESCOM PENALTY!")
-elif throttle_pct > 0:
-    st.success(esg_message)
+# Update History
+st.session_state.kva_history.append(current_kva)
+if len(st.session_state.kva_history) > 60:
+    st.session_state.kva_history.pop(0)
 
-# Metric Display Columns
+# 4. The War Room UI
 col1, col2, col3 = st.columns(3)
 
+# Critical Alerts
+if current_kva > 500 and action["status"] != "executed":
+    st.error("🚨 CRITICAL: MAXIMUM DEMAND EXCEEDED (500 kVA). 15:00 UNTIL ₹85,000 PENALTY.")
+elif action["status"] == "executed":
+    st.success(f"🤖 AI SWARM INTERVENTION: {action['justification']}")
+
 with col1:
-    delta_val = total_kva - 450.0
-    st.metric(
-        label="Total Campus Demand (kVA)",
-        value=f"{total_kva:.1f} kVA",
-        delta=f"{delta_val:+.1f} kVA vs nominal" if abs(delta_val) > 0.1 else "Nominal",
-        delta_color="inverse"
-    )
-
+    st.metric("MSRIT Total Load (kVA)", f"{current_kva:.1f}", delta=f"{current_kva - 452:.1f} from baseline" if telemetry["fault_active"] else None, delta_color="inverse")
 with col2:
-    st.metric(
-        label="STP Blowers Load (kW)",
-        value=f"{stp_current_kw:.1f} kW",
-        delta=f"-{throttle_pct}% Throttled" if throttle_pct > 0 else "100% Full Power"
-    )
-
+    st.metric("STP Blower Power (kW)", f"{stp_actual_kw:.1f}", delta=f"-{action['shed_percentage']}%" if action["status"] == "executed" else None)
 with col3:
-    st.metric(
-        label="STP Dissolved Oxygen (mg/L)",
-        value=f"{do_level:.1f} mg/L",
-        delta="-1.3 mg/L (Safe Latency)" if do_level < 2.0 else "Optimal"
-    )
+    st.metric("STP Dissolved Oxygen (mg/L)", f"{do_level}", delta="-0.8 (Safe Limit: 1.0)" if do_level < 2.0 else None)
 
-st.markdown("---")
-
-# 6. Live Chart Section
-st.subheader("📈 Live Campus Load vs. BESCOM 500 kVA Threshold")
-chart_df = pd.DataFrame({
-    "Campus Load (kVA)": st.session_state.power_history,
-    "BESCOM Max Demand Limit (500 kVA)": [500.0] * len(st.session_state.power_history)
+# 5. Live Adversarial Graph
+st.subheader("Live Power Grid vs. BESCOM Limit")
+chart_data = pd.DataFrame({
+    "Actual Campus Load (kVA)": st.session_state.kva_history,
+    "BESCOM Penalty Limit": [500] * len(st.session_state.kva_history)
 })
-st.line_chart(chart_df, color=["#ff4b4b" if total_kva > 500 else "#00d4b1", "#ff0000"])
+st.line_chart(chart_data, color=["#1f77b4", "#d62728"])
 
-# 7. Auto-refresh every 1 second
+# 6. Auto-Refresh Loop
 time.sleep(1)
 st.rerun()
